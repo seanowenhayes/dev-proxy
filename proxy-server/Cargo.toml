@@ -1,0 +1,13 @@
+[package]
+name = "proxy-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = "0.8.8"
+hyper = { version = "1", features = ["full"] }
+hyper-util = "0.1.1"
+tokio = { version = "1.0", features = ["full"] }
+tower = { version = "0.5.2", features = ["make", "util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

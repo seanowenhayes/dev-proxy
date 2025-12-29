@@ -1,0 +1,5 @@
+{
+  "scripts": {
+    "server": "(cd proxy-server && cargo run)"
+  }
+}
