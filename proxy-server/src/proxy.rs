@@ -64,7 +64,7 @@ pub async fn main() {
         tower_service.clone().call(request)
     });
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    let addr = SocketAddr::from(([127, 0, 0, 1], 3003));
     tracing::debug!("listening on {}", addr);
 
     let listener = TcpListener::bind(addr).await.unwrap();
