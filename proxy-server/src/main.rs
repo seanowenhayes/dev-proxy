@@ -1,4 +1,3 @@
-use axum::{Router, routing::get};
 use dotenv::dotenv;
 
 use crate::app::app;
