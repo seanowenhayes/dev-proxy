@@ -14,7 +14,7 @@
 
 use axum::{
     Router,
-    body::Body,
+    body::{Body, Bytes},
     extract::Request,
     http::{Method, StatusCode},
     response::{IntoResponse, Response},
@@ -24,8 +24,11 @@ use axum::{
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::upgrade::Upgraded;
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tower::Service;
 use tower::ServiceExt;
 
@@ -87,18 +90,35 @@ async fn proxy(req: Request) -> Result<Response, hyper::Error> {
     tracing::trace!(?req);
 
     if let Some(host_addr) = req.uri().authority().map(|auth| auth.to_string()) {
+        // channel of Bytes (wrapped in Result to satisfy Body::wrap_stream error type)
+        let (tx, rx) = mpsc::channel::<Result<Bytes, Infallible>>(64);
+        let stream = ReceiverStream::new(rx);
+        let body = Body::from_stream(stream);
+        let response = Response::new(body);
+
+        let tx_spawn = tx.clone();
+        let host_addr_clone = host_addr.clone();
         tokio::task::spawn(async move {
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
-                    if let Err(e) = tunnel(upgraded, host_addr).await {
+                    if let Err(e) = tunnel(upgraded, host_addr_clone, tx_spawn).await {
+                        // try to send the error into the stream for the client as well
+                        let _ = tx
+                            .send(Ok(Bytes::from(format!("server io error: {}\n", e))))
+                            .await;
                         tracing::warn!("server io error: {}", e);
                     };
                 }
-                Err(e) => tracing::warn!("upgrade error: {}", e),
+                Err(e) => {
+                    let _ = tx
+                        .send(Ok(Bytes::from(format!("upgrade error: {}\n", e))))
+                        .await;
+                    tracing::warn!("upgrade error: {}", e)
+                }
             }
         });
 
-        Ok(Response::new(Body::empty()))
+        Ok(response)
     } else {
         tracing::warn!("CONNECT host is not socket addr: {:?}", req.uri());
         Ok((
@@ -109,12 +129,29 @@ async fn proxy(req: Request) -> Result<Response, hyper::Error> {
     }
 }
 
-async fn tunnel(upgraded: Upgraded, addr: String) -> std::io::Result<()> {
+async fn tunnel(
+    upgraded: Upgraded,
+    addr: String,
+    mut tx: mpsc::Sender<Result<Bytes, Infallible>>,
+) -> std::io::Result<()> {
+    // notify client that we're connecting
+    let _ = tx
+        .send(Ok(Bytes::from(format!("connecting to {}\n", addr))))
+        .await;
+
     let mut server = TcpStream::connect(addr).await?;
     let mut upgraded = TokioIo::new(upgraded);
 
     let (from_client, from_server) =
         tokio::io::copy_bidirectional(&mut upgraded, &mut server).await?;
+
+    // send a final message into the stream
+    let _ = tx
+        .send(Ok(Bytes::from(format!(
+            "client wrote {} bytes and received {} bytes\n",
+            from_client, from_server
+        ))))
+        .await;
 
     tracing::debug!(
         "client wrote {} bytes and received {} bytes",
