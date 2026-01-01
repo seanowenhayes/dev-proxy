@@ -63,8 +63,12 @@ pub async fn main() {
     let hyper_service = hyper::service::service_fn(move |request: Request<Incoming>| {
         tower_service.clone().call(request)
     });
+    let port: u16 = std::env::var("PROXY_SERVER_PORT")
+        .unwrap_or_else(|_| "3003".to_string())
+        .parse()
+        .expect("Failed to parse proxy PORT");
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3003));
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
     tracing::debug!("listening on {}", addr);
 
     let listener = TcpListener::bind(addr).await.unwrap();
