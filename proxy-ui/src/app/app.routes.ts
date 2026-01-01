@@ -1,3 +1,8 @@
 import { Routes } from '@angular/router';
-
-export const routes: Routes = [];
+import { SseScreen } from './sse-screen/sse-screen';
+export const routes: Routes = [
+  {
+    path: 'sse',
+    component: SseScreen,
+  },
+];
