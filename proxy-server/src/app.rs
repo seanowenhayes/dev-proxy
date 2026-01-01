@@ -9,7 +9,9 @@ use std::{convert::Infallible, time::Duration};
 use tokio_stream::StreamExt as _;
 
 pub fn app() -> Router {
-    Router::new().route("/", get(|| async { "Hello, Axums!" }))
+    Router::new()
+        .route("/", get(|| async { "Hello, Axums!" }))
+        .route("/sse", get(sse_handler))
 }
 
 async fn sse_handler(
