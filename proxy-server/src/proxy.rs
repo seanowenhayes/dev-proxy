@@ -35,7 +35,6 @@ use tower::ServiceExt;
 use hyper_util::rt::TokioIo;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-#[tokio::main]
 pub async fn main() {
     tracing_subscriber::registry()
         .with(
