@@ -9,8 +9,14 @@ export class SseService {
     return new Observable((observer) => {
       const eventSourceUrl = 'http://localhost:3030/sse';
 
-      const eventSource = new EventSource(eventSourceUrl, {
-        withCredentials: true,
+      const eventSource = new EventSource(eventSourceUrl);
+
+      eventSource.addEventListener('open', (openEvent) => {
+        console.log({ openEvent });
+      });
+
+      eventSource.addEventListener('error', (error) => {
+        console.error({ error });
       });
 
       eventSource.onmessage = (event) => {

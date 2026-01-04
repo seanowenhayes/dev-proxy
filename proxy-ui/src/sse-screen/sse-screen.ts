@@ -10,7 +10,7 @@ import { SseService } from './sse-service';
 export class SseScreen {
   sseService = inject(SseService);
 
-  carrot() {
+  constructor() {
     this.sseService.connectSSE().subscribe((data) => console.log(data));
   }
 }
