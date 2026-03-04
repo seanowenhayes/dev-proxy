@@ -3,6 +3,10 @@ name = "proxy-tauri"
 version = "0.1.0"
 edition = "2021"
 
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = ["config-json5"] }
+
 [dependencies]
-tauri = { version = "1", features = ["api-all"] }
+# use the matching major version for the installed CLI (>=2.x)
+tauri = { version = "2.0.0", features = ["config-json5"] }
 proxy_server = { path = "../", package = "proxy-server" }

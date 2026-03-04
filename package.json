@@ -1,9 +1,10 @@
 {
-  "scripts": {
-    "server": "cargo run",
-    "frontend:dev": "cd frontend && npm run dev",
-    "frontend:build": "cd frontend && npm run build",
-    "tauri:dev": "cd src-tauri && cargo tauri dev",
-    "tauri:build": "cd src-tauri && cargo tauri build"
-  }
+    "scripts": {
+        "server": "cargo run",
+        "frontend:dev": "cd frontend && npm run dev",
+        "frontend:build": "cd frontend && npm run build",
+        "tauri:dev": "cd src-tauri && cargo tauri dev",
+        "tauri:build": "cd src-tauri && cargo tauri build",
+        "tauri": "tauri"
+    }
 }

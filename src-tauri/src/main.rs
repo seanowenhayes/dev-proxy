@@ -1,7 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::Manager;
-
 #[tauri::command]
 fn start_proxy() -> Result<String, String> {
     proxy_server::start_once().map(|_| "started".to_string())

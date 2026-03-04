@@ -135,7 +135,7 @@ async fn proxy(req: Request) -> Result<Response, hyper::Error> {
 async fn tunnel(
     upgraded: Upgraded,
     addr: String,
-    mut tx: mpsc::Sender<Result<Bytes, Infallible>>,
+    tx: mpsc::Sender<Result<Bytes, Infallible>>,
 ) -> std::io::Result<()> {
     // notify client that we're connecting
     let _ = tx

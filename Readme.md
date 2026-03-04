@@ -87,6 +87,56 @@ dev-proxy/
 - Calls Tauri commands via `@tauri-apps/api`
 - Displays proxy status and start/stop button
 
+## Quick Start
+
+### 1. Install Dependencies
+
+```bash
+# Install Node dependencies for frontend
+cd frontend
+npm install
+cd ..
+
+# Install Tauri CLI globally (one-time); match the major version used in the Rust
+# dependency (v2 at the time of writing):
+#   npm install -g @tauri-apps/cli@^2
+npm install -g @tauri-apps/cli
+```
+
+### 2. Start Development
+
+Open **two terminal windows**:
+
+**Terminal 1: Frontend dev server** (runs hot-reload on port **5174**)
+```bash
+npm run frontend:dev
+```
+
+**Terminal 2: Tauri desktop app** (connects to Terminal 1)
+```bash
+npm run tauri:dev
+```
+
+The desktop window will open automatically. Click **Start** to run the proxy, **Stop** to shut it down.
+
+### 3. Build for macOS Distribution
+
+```bash
+# Build frontend and package as .app / .dmg
+npm run frontend:build
+npm run tauri:build
+```
+
+Output: `src-tauri/target/release/bundle/`
+
+### 4. (Optional) Run Proxy CLI Without Desktop UI
+
+```bash
+cargo run
+# Starts proxy on localhost:3003
+# Axum server on localhost:3030
+```
+
 ## Development
 
 ### Prerequisites
@@ -94,52 +144,37 @@ dev-proxy/
 - Node.js 18+
 - Rust 1.70+
 - Xcode Command Line Tools (macOS)
-- `@tauri-apps/cli` installed globally:
-  ```bash
-  npm install -g @tauri-apps/cli
-  ```
+- Tauri CLI: `npm install -g @tauri-apps/cli`
 
-### Setup
+### Setup & Running
 
+See **Quick Start** above for the fastest way to get up and running.
+
+For detailed reference:
+
+**Frontend setup**
 ```bash
-# Install dependencies (frontend only; Cargo managed separately)
-cd frontend
-npm install
-cd ..
+cd frontend && npm install && cd ..
 ```
 
-### Running in Development
-
-**Terminal 1: Start frontend dev server**
+**Running development servers**
 ```bash
-npm run frontend:dev
-# Runs on http://localhost:5174
+# Terminal 1: Frontend
+npm run frontend:dev        # Runs on http://localhost:5173
+
+# Terminal 2: Tauri
+npm run tauri:dev           # Connects to frontend, opens window with hot-reload
 ```
 
-**Terminal 2: Start Tauri desktop app**
+**Building & packaging**
 ```bash
-npm run tauri:dev
-# Connects to frontend on port 5174
-# Opens desktop window with hot-reload
+npm run frontend:build      # Vite production build -> frontend/dist
+npm run tauri:build         # Creates .app and .dmg for macOS -> src-tauri/target/release/bundle
 ```
 
-### Building for Release
-
+**Running proxy without desktop UI**
 ```bash
-# Build frontend for production
-npm run frontend:build
-
-# Build macOS .app bundle and .dmg
-npm run tauri:build
-
-# Outputs to src-tauri/target/release/bundle/
-```
-
-### Optional: Run Proxy CLI Only
-
-```bash
-cargo run
-# Starts proxy on 3003 and Axum server on 3030 (no desktop UI)
+cargo run                   # CLI-only: proxy on 3003, Axum on 3030
 ```
 
 ## Configuration
@@ -155,7 +190,7 @@ AXUM_SERVER_PORT=3030        # REST/SSE server listen port
 ### Tauri Config
 
 `src-tauri/tauri.conf.json`:
-- `devUrl`: Points to frontend dev server (port 5174)
+- `devUrl`: Points to frontend dev server (port 5173)
 - `frontendDist`: Path to built frontend output (`../frontend/dist`)
 - `identifier`: Bundle identifier (`com.proxy.app`)
 - Window dimensions: 800x600
