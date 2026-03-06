@@ -10,3 +10,8 @@ tauri-build = { version = "2.0.0", features = ["config-json5"] }
 # use the matching major version for the installed CLI (>=2.x)
 tauri = { version = "2.0.0", features = ["config-json5"] }
 proxy_server = { path = "../", package = "proxy-server" }
+tauri-plugin-devtools = "2.0.0"
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+tokio = { version = "1", features = ["full"] }
