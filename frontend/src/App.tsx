@@ -1,9 +1,9 @@
-import React from 'react';
+import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from './components/ui/Button';
 
 function App() {
-    const [running, setRunning] = React.useState(false);
+    const [running, setRunning] = useState(false);
 
     const checkStatus = async () => {
         const status: boolean = await invoke('status_proxy');
@@ -19,7 +19,7 @@ function App() {
         checkStatus();
     };
 
-    React.useEffect(() => {
+    useEffect(() => {
         checkStatus();
     }, []);
 
