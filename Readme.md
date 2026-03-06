@@ -67,17 +67,12 @@ dev-proxy/
 ### Key Components
 
 **proxy-server (Rust Library)**
-- `start_once()` — Spawns proxy and Axum app in background tasks, stores handles globally
-- `stop_if_running()` — Stops running proxy and app, cleans up handles
-- `status()` — Returns whether proxy is currently running
+- `start_once()` — Spawns proxy in background tasks
 - Proxy binds to port 3003 (CONNECT tunneling)
-- Axum server binds to port 3030 (SSE logs, REST endpoints)
 
 **Tauri Backend (src-tauri)**
 - Exposes three commands:
   - `start_proxy` — Calls `proxy_server::start_once()`
-  - `stop_proxy` — Calls `proxy_server::stop_if_running()`
-  - `status_proxy` — Calls `proxy_server::status()`
 - Routes commands to frontend via IPC
 
 **Frontend (React + shadcn)**

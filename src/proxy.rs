@@ -30,17 +30,18 @@ use tower::Service;
 use tower::ServiceExt;
 
 use hyper_util::rt::TokioIo;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+// use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 pub async fn main() {
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                format!("{}=trace,tower_http=debug", env!("CARGO_CRATE_NAME")).into()
-            }),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
+    println!("Starting proxy...");
+    // tracing_subscriber::registry()
+    //     .with(
+    //         tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+    //             format!("{}=trace,tower_http=debug", env!("CARGO_CRATE_NAME")).into()
+    //         }),
+    //     )
+    //     .with(tracing_subscriber::fmt::layer())
+    //     .init();
 
     let router_svc = Router::new().route("/", get(|| async { "Hello, World!" }));
 
