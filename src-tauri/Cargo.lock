@@ -2981,6 +2981,7 @@ name = "proxy-tauri"
 version = "0.1.0"
 dependencies = [
  "proxy-server",
+ "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-devtools",

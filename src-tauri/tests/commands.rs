@@ -20,11 +20,7 @@ mod app;
 
 fn build_app() -> tauri::App<tauri::test::MockRuntime> {
     mock_builder()
-        .invoke_handler(tauri::generate_handler![
-            app::start_proxy,
-            app::stop_proxy,
-            app::status_proxy,
-        ])
+        .invoke_handler(tauri::generate_handler![app::start_proxy])
         .build(mock_context(noop_assets()))
         .expect("failed to build mock app")
 }

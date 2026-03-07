@@ -1,0 +1,7 @@
+// .vscode/settings.json
+{
+    "rust-analyzer.linkedProjects": [
+        "Cargo.toml",
+        "src-tauri/Cargo.toml"
+    ]
+}

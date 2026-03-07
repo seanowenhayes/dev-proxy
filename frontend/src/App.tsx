@@ -1,27 +1,20 @@
 import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, Channel } from '@tauri-apps/api/core';
 import { Button } from './components/ui/Button';
+
+type ProxyEvent = { event: 'started', data: { addr: string } } | { event: 'stopped' } | { event: 'error', data: { message: string } };
+const onEvent = new Channel<ProxyEvent>();
+onEvent.onmessage = (message) => {
+    console.log(`got download event ${message.event}`);
+};
 
 function App() {
     const [running, setRunning] = useState(false);
 
-    const checkStatus = async () => {
-        const status: boolean = await invoke('status_proxy');
-        setRunning(status);
-    };
-
     const start = async () => {
-        await invoke('start_proxy');
-        checkStatus();
+        await invoke('start_proxy', { onEvent });
+        setRunning(true);
     };
-    const stop = async () => {
-        await invoke('stop_proxy');
-        checkStatus();
-    };
-
-    useEffect(() => {
-        checkStatus();
-    }, []);
 
     return (
         <div className="p-4">
