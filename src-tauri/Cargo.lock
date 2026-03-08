@@ -2968,6 +2968,7 @@ dependencies = [
  "hyper 1.8.1",
  "hyper-util",
  "once_cell",
+ "serde",
  "tokio",
  "tokio-stream",
  "tower 0.5.3",
@@ -2981,7 +2982,6 @@ name = "proxy-tauri"
 version = "0.1.0"
 dependencies = [
  "proxy-server",
- "serde",
  "tauri",
  "tauri-build",
  "tauri-plugin-devtools",

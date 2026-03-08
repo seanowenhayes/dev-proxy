@@ -40,7 +40,7 @@ This project monitors API calls flowing through a backend service (e.g., a BFF) 
 ```
 dev-proxy/
 ├── src/                          # Rust proxy library + CLI binary
-│   ├── lib.rs                    # Public API: start_once(), stop_if_running(), status()
+│   ├── lib.rs                    # Public API: start_once(sender), stop_if_running(), status()
 │   ├── main.rs                   # CLI entry point
 │   ├── proxy.rs                  # HTTP proxy logic (CONNECT tunneling)
 │   └── app.rs                    # Axum server for SSE + REST endpoints
@@ -67,12 +67,12 @@ dev-proxy/
 ### Key Components
 
 **proxy-server (Rust Library)**
-- `start_once()` — Spawns proxy in background tasks
+- `start_once(sender)` — Spawns proxy in background tasks and returns events via the provided channel
 - Proxy binds to port 3003 (CONNECT tunneling)
 
 **Tauri Backend (src-tauri)**
 - Exposes three commands:
-  - `start_proxy` — Calls `proxy_server::start_once()`
+  - `start_proxy` — Calls `proxy_server::start_once(sender)`
 - Routes commands to frontend via IPC
 
 **Frontend (React + shadcn)**

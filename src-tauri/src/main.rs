@@ -1,33 +1,27 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use serde::Serialize;
+use proxy_server::proxy::ProxyEvent;
 use tauri::ipc::Channel;
-
-#[derive(Clone, Serialize)]
-#[serde(
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    tag = "event",
-    content = "data"
-)]
-pub enum ProxyEvent {
-    Started { addr: String },
-    Stopped,
-    Error { message: String },
-}
 
 #[tauri::command]
 async fn start_proxy(on_event: Channel<ProxyEvent>) {
     println!("start_proxy called");
-    let message = proxy_server::start_once()
-        .await
-        .map_err(|e| ProxyEvent::Error { message: e })
-        .map(|_| ProxyEvent::Started {
-            addr: "127.0.0.1:3003".to_string(),
-        });
-    match message {
-        Ok(event) => on_event.send(event).unwrap(),
-        Err(event) => on_event.send(event).unwrap(),
+
+    // create a channel for the proxy library to send us events
+    let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+
+    // forward any received library events to the frontend channel
+    let mut on_event_clone = on_event.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            // ignore send errors (frontend might have disconnected)
+            let _ = on_event_clone.send(ev);
+        }
+    });
+
+    // start the server; errors are reported separately below
+    if let Err(e) = proxy_server::start_once(tx).await {
+        let _ = on_event.send(ProxyEvent::ConnectionError(e.to_string()));
     }
 }
 
