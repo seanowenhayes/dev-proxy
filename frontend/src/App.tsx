@@ -2,7 +2,11 @@ import { useState, useEffect } from 'react';
 import { invoke, Channel } from '@tauri-apps/api/core';
 import { Button } from './components/ui/Button';
 
-type ProxyEvent = { event: 'started', data: { addr: string } } | { event: 'stopped' } | { event: 'error', data: { message: string } };
+type ProxyEvent = { event: 'started', data: string }
+    | { event: 'connectionAccepted', data: string }
+    | { event: 'connectionError', data: string }
+    | { event: 'tunnel', data: { addr: string, fromClient: number, fromServer: number } };
+
 const onEvent = new Channel<ProxyEvent>();
 
 function App() {
@@ -14,19 +18,22 @@ function App() {
         setRunning(true);
     };
 
-    useEffect(() => {
-        onEvent.onmessage = (message) => {
-            console.log(`got proxy event ${message.event}`);
-            if (message.event === 'started') {
-                setMessages((prev) => [...prev, `Proxy started at ${message.data.addr}`]);
-            } else if (message.event === 'stopped') {
-                setMessages((prev) => [...prev, 'Proxy stopped']);
+    onEvent.onmessage = (message) => {
+        switch (message.event) {
+            case 'started':
+                setRunning(true);
+                setMessages((prev) => [...prev, `Proxy started at ${message.data}`]);
+                break;
+            case 'connectionAccepted':
+                setMessages((prev) => [...prev, `Connection accepted from ${message.data}`]);
+                break;
+            case 'connectionError':
+                setMessages((prev) => [...prev, `Connection error: ${message.data}`]);
                 setRunning(false);
-            } else if (message.event === 'error') {
-                setMessages((prev) => [...prev, `Error: ${message.data.message}`]);
-            }
-        };
-    }, []);
+                break;
+            default: console.log('Unknown event', message);
+        }
+    };
 
     return (
         <div className="p-4">
