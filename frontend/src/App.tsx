@@ -31,6 +31,9 @@ function App() {
                 setMessages((prev) => [...prev, `Connection error: ${message.data}`]);
                 setRunning(false);
                 break;
+            case 'tunnel':
+                setMessages((prev) => [...prev, `Tunnel established to ${message.data.addr} (client: ${message.data.fromClient} bytes, server: ${message.data.fromServer} bytes)`]);
+                break;
             default: console.log('Unknown event', message);
         }
     };
