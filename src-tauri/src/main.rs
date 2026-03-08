@@ -11,7 +11,7 @@ async fn start_proxy(on_event: Channel<ProxyEvent>) {
     let (tx, mut rx) = tokio::sync::mpsc::channel(32);
 
     // forward any received library events to the frontend channel
-    let mut on_event_clone = on_event.clone();
+    let on_event_clone = on_event.clone();
     tokio::spawn(async move {
         while let Some(ev) = rx.recv().await {
             // ignore send errors (frontend might have disconnected)
