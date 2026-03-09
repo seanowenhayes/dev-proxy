@@ -25,7 +25,7 @@ use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::upgrade::Upgraded;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
+use std::{collections::HashMap, net::SocketAddr};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tower::Service;
@@ -50,6 +50,11 @@ pub enum ProxyEvent {
         addr: String,
         from_client: u64,
         from_server: u64,
+    },
+    RequestReceived {
+        method: String,
+        uri: String,
+        headers: HashMap<String, String>,
     },
 }
 
@@ -114,7 +119,19 @@ pub async fn main(event_tx: mpsc::Sender<ProxyEvent>) {
 
 async fn proxy(req: Request, event_tx: mpsc::Sender<ProxyEvent>) -> Result<Response, hyper::Error> {
     tracing::trace!(?req);
-
+    let method = req.method().to_string();
+    let uri = req.uri().to_string();
+    let headers = req.headers().clone();
+    let _ = event_tx
+        .send(ProxyEvent::RequestReceived {
+            method,
+            uri,
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                .collect(),
+        })
+        .await;
     if let Some(host_addr) = req.uri().authority().map(|auth| auth.to_string()) {
         let tx = event_tx.clone();
         tokio::task::spawn(async move {

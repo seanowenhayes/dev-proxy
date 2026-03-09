@@ -5,7 +5,8 @@ import { Button } from './components/ui/Button';
 type ProxyEvent = { event: 'started', data: string }
     | { event: 'connectionAccepted', data: string }
     | { event: 'connectionError', data: string }
-    | { event: 'tunnel', data: { addr: string, fromClient: number, fromServer: number } };
+    | { event: 'tunnel', data: { addr: string, fromClient: number, fromServer: number } }
+    | { event: 'requestReceived', data: { method: string, uri: string, headers: Record<string, string> } };
 
 const onEvent = new Channel<ProxyEvent>();
 
@@ -33,6 +34,9 @@ function App() {
                 break;
             case 'tunnel':
                 setMessages((prev) => [...prev, `Tunnel established to ${message.data.addr} (client: ${message.data.fromClient} bytes, server: ${message.data.fromServer} bytes)`]);
+                break;
+            case 'requestReceived':
+                setMessages((prev) => [...prev, `Request: ${message.data.method} ${message.data.uri}, headers: ${JSON.stringify(message.data.headers)}  `]);
                 break;
             default: console.log('Unknown event', message);
         }
