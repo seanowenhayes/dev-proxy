@@ -1,0 +1,9 @@
+/target
+
+# ignore all node_modules folders
+node_modules/
+**/node_modules/
+
+# ignore all target folders
+target/
+**/target/
