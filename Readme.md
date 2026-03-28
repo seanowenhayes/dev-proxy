@@ -1,226 +1,79 @@
 # dev-proxy
 
-A desktop GUI application for monitoring and controlling an HTTP/HTTPS proxy server. Built with Rust (Tauri backend), React (shadcn/Tailwind frontend), and TanStack libraries for state management.
+A fast, headless Rust MITM (man-in-the-middle) proxy for inspecting HTTP/HTTPS traffic. Designed for developers who want to observe what a BFF (Backend for Frontend) or any HTTP client is actually sending — without a custom UI. Traffic is surfaced directly in browser DevTools via the Chrome DevTools Protocol (CDP).
 
-## Project Overview
+## Goal
 
-This project monitors API calls flowing through a backend service (e.g., a BFF) by intercepting and logging HTTP traffic. The desktop app provides a UI to start/stop the proxy and view connection logs in real-time.
+Intercept and inspect outbound HTTP/HTTPS requests from a local service. Instead of building a bespoke UI, the proxy speaks CDP so you can use the browser's built-in **Network tab** — filterable, searchable, HAR-exportable, already familiar.
 
 ## Architecture
 
-### High-Level Flow
-
 ```
-┌─────────────────────────────────────┐
-│  Frontend (React + shadcn)          │
-│  - Start/stop controls              │
-│  - Status display                   │
-│  - Tauri API integration            │
-└──────────────┬──────────────────────┘
-               │ Tauri Commands
-               ▼
-┌─────────────────────────────────────┐
-│  Tauri Backend (Rust)               │
-│  - Exposes start_proxy command      │
-│  - Calls into proxy-server library  │
-│  - Manages app lifecycle            │
-└──────────────┬──────────────────────┘
-               │ Library API
-               ▼
-┌─────────────────────────────────────┐
-│  proxy-server Library (Rust)        │
-│  - HTTP proxy (CONNECT tunneling)   │
-│  - Axum server for SSE logs         │
-│  - Global start/stop controls       │
-└─────────────────────────────────────┘
+Your BFF / HTTP client
+        │  (configured to use localhost:3003 as proxy)
+        ▼
+┌───────────────────────┐
+│   dev-proxy (Rust)    │
+│   MITM proxy          │
+│   - HTTP CONNECT      │
+│   - Tunnel forwarding │
+│   - Event emission    │
+└──────────┬────────────┘
+           │  CDP (Chrome DevTools Protocol)
+           ▼
+  Browser DevTools Network tab
 ```
 
-### Folder Structure
+## Folder Structure
 
 ```
 dev-proxy/
-├── src/                          # Rust proxy library + CLI binary
-│   ├── lib.rs                    # Public API: start_once(sender), stop_if_running(), status()
-│   ├── main.rs                   # CLI entry point
-│   ├── proxy.rs                  # HTTP proxy logic (CONNECT tunneling)
-│   └── app.rs                    # Axum server for SSE + REST endpoints
-├── src-tauri/                    # Tauri desktop backend
-│   ├── src/main.rs               # Tauri app entry, command handlers
-│   ├── tauri.conf.json           # Tauri config (v2 schema)
-│   └── Cargo.toml                # Tauri dependencies
-├── frontend/                     # React frontend
-│   ├── src/
-│   │   ├── App.tsx               # Main component (start/stop UI)
-│   │   ├── main.tsx              # React DOM entry
-│   │   ├── index.css             # Tailwind directives
-│   │   ├── components/ui/
-│   │   │   └── Button.tsx        # shadcn Button component
-│   │   └── utils.ts              # Utility functions (cn())
-│   ├── index.html                # Entry HTML
-│   ├── vite.config.ts            # Vite + React plugin config
-│   └── package.json              # Frontend dependencies
-├── Cargo.toml                    # Root Rust workspace
-├── package.json                  # Root scripts
-└── .gitignore                    # Ignore node_modules, /target
+├── src/
+│   ├── lib.rs       # Public API: start_once(), start_with_sender(), status()
+│   ├── main.rs      # CLI entry point
+│   └── proxy.rs     # HTTP proxy logic (CONNECT tunneling, event emission)
+├── Cargo.toml
+└── .env
 ```
-
-### Key Components
-
-**proxy-server (Rust Library)**
-- `start_once(sender)` — Spawns proxy in background tasks and returns events via the provided channel
-- Proxy binds to port 3003 (CONNECT tunneling)
-
-**Tauri Backend (src-tauri)**
-- Exposes three commands:
-  - `start_proxy` — Calls `proxy_server::start_once(sender)`
-- Routes commands to frontend via IPC
-
-**Frontend (React + shadcn)**
-- React hooks for state management (useState)
-- TanStack React Query for async operations (in place for future expansion)
-- Shadcn Button component (customizable, styled with Tailwind)
-- Calls Tauri commands via `@tauri-apps/api`
-- Displays proxy status and start/stop button
 
 ## Quick Start
 
-### 1. Install Dependencies
+### Prerequisites
 
-```bash
-# Install Node dependencies for frontend
-cd frontend
-npm install
-cd ..
+- Rust 1.70+
 
-# Install Tauri CLI globally (one-time); match the major version used in the Rust
-# dependency (v2 at the time of writing):
-#   npm install -g @tauri-apps/cli@^2
-npm install -g @tauri-apps/cli
-```
-
-### 2. Start Development
-
-Open **two terminal windows**:
-
-**Terminal 1: Frontend dev server** (runs hot-reload on port **5174**)
-```bash
-npm run frontend:dev
-```
-
-**Terminal 2: Tauri desktop app** (connects to Terminal 1)
-```bash
-npm run tauri:dev
-```
-
-The desktop window will open automatically. Click **Start** to run the proxy, **Stop** to shut it down.
-
-### 3. Build for macOS Distribution
-
-```bash
-# Build frontend and package as .app / .dmg
-npm run frontend:build
-npm run tauri:build
-```
-
-Output: `src-tauri/target/release/bundle/`
-
-### 4. (Optional) Run Proxy CLI Without Desktop UI
+### Run
 
 ```bash
 cargo run
-# Starts proxy on localhost:3003
-# Axum server on localhost:3030
+# Proxy starts on localhost:3003
 ```
 
-## Development
-
-### Prerequisites
-
-- Node.js 18+
-- Rust 1.70+
-- Xcode Command Line Tools (macOS)
-- Tauri CLI: `npm install -g @tauri-apps/cli`
-
-### Setup & Running
-
-See **Quick Start** above for the fastest way to get up and running.
-
-For detailed reference:
-
-**Frontend setup**
-```bash
-cd frontend && npm install && cd ..
-```
-
-**Running development servers**
-```bash
-# Terminal 1: Frontend
-npm run frontend:dev        # Runs on http://localhost:5173
-
-# Terminal 2: Tauri
-npm run tauri:dev           # Connects to frontend, opens window with hot-reload
-```
-
-**Building & packaging**
-```bash
-npm run frontend:build      # Vite production build -> frontend/dist
-npm run tauri:build         # Creates .app and .dmg for macOS -> src-tauri/target/release/bundle
-```
-
-**Running proxy without desktop UI**
-```bash
-cargo run                   # CLI-only: proxy on 3003, Axum on 3030
-```
-
-## Configuration
+Configure your HTTP client or BFF to use `http://127.0.0.1:3003` as its proxy.
 
 ### Environment Variables
 
-In `.env` at repo root:
 ```
-PROXY_SERVER_PORT=3003       # HTTP proxy listen port
-AXUM_SERVER_PORT=3030        # REST/SSE server listen port
+PROXY_SERVER_PORT=3003   # Port the proxy listens on (default: 3003)
 ```
 
-### Tauri Config
+## Events
 
-`src-tauri/tauri.conf.json`:
-- `devUrl`: Points to frontend dev server (port 5173)
-- `frontendDist`: Path to built frontend output (`../frontend/dist`)
-- `identifier`: Bundle identifier (`com.proxy.app`)
-- Window dimensions: 800x600
+The proxy emits structured events via a tokio channel as it runs:
 
-## Architecture Rationale
+| Event | Description |
+|---|---|
+| `Started(addr)` | Proxy is listening |
+| `ConnectionAccepted(addr)` | Client connected |
+| `RequestReceived { method, uri, headers }` | HTTP CONNECT request intercepted |
+| `Tunnel { addr, from_client, from_server }` | Tunnel closed, bytes transferred |
+| `ConnectionError(msg)` | Connection or upgrade failed |
 
-**Why separate `src/` and `src-tauri/`?**
-- Keeps concerns isolated: library vs. desktop app
-- Allows running proxy as standalone CLI or via Tauri
-- Simplifies dependency management (Tauri deps don't bloat the library)
-- Standard Tauri monorepo pattern
+Use `start_with_sender(tx)` to receive these in your own code.
 
-**Why Tauri over Electron?**
-- Smaller bundle size (~10x smaller)
-- Native Rust backend (no Node.js runtime)
-- OS-level integrations cheaper
-- Full Rust ecosystem for proxy logic
+## Roadmap
 
-**Why shadcn + Tailwind?**
-- Component library pattern (copy-paste, fully customizable)
-- Tailwind for rapid styling
-- Low overhead compared to Material or Bootstrap
-
-## Future Enhancements
-
-- Real-time log streaming via SSE or WebSocket
-- Request/response filtering and search
-- Export logs as HAR or JSON
-- Settings panel (port configuration, TLS certificate pinning)
-- Dark mode theme toggle
-- Cross-platform native installers (Windows .msi, Linux .deb)
-
-## Notes
-
-- The proxy uses HTTP CONNECT method for HTTPS tunneling
-- Port 3003 (proxy) binds to localhost only; adjust in `src/proxy.rs` if needed
-- Tauri v2 architecture (stable as of March 2026)
-- Frontend built with Vite v4 and esbuild for fast HMR
+- CDP integration — expose intercepted requests in browser DevTools Network tab
+- Request/response body capture (requires TLS termination / MITM cert)
+- Request filtering and rewriting
+- HAR export
