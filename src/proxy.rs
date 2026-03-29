@@ -59,6 +59,20 @@ pub enum ProxyEvent {
 }
 
 pub async fn main(event_tx: mpsc::Sender<ProxyEvent>) {
+    let port: u16 = std::env::var("PROXY_SERVER_PORT")
+        .unwrap_or_else(|_| "3003".to_string())
+        .parse()
+        .expect("Failed to parse proxy PORT");
+
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    serve_listener(addr, event_tx).await
+}
+
+/// HTTP proxy listener: `CONNECT` tunnels and plain HTTP hits the inner router (`GET /` → hello).
+///
+/// Use [`SocketAddr`] with port `0` to bind an ephemeral port (integration tests). This function
+/// never returns.
+pub async fn serve_listener(addr: SocketAddr, event_tx: mpsc::Sender<ProxyEvent>) -> ! {
     println!("Starting proxy...");
 
     let router_svc = Router::new().route("/", get(|| async { "Hello, World!" }));
@@ -80,13 +94,6 @@ pub async fn main(event_tx: mpsc::Sender<ProxyEvent>) {
     let hyper_service = hyper::service::service_fn(move |request: Request<Incoming>| {
         tower_service.clone().call(request)
     });
-
-    let port: u16 = std::env::var("PROXY_SERVER_PORT")
-        .unwrap_or_else(|_| "3003".to_string())
-        .parse()
-        .expect("Failed to parse proxy PORT");
-
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
 
     tracing::debug!("listening on {}", addr);
 
@@ -186,4 +193,40 @@ async fn tunnel(
         .await;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProxyEvent;
+    use std::collections::HashMap;
+    use std::net::SocketAddr;
+
+    #[test]
+    fn proxy_event_serde_roundtrip() {
+        let started: SocketAddr = "127.0.0.1:3003".parse().unwrap();
+        let peer: SocketAddr = "127.0.0.1:51000".parse().unwrap();
+        let cases = vec![
+            ProxyEvent::Started(started),
+            ProxyEvent::ConnectionAccepted(peer),
+            ProxyEvent::ConnectionError("eof".into()),
+            ProxyEvent::Tunnel {
+                addr: "example.com:443".into(),
+                from_client: 10,
+                from_server: 20,
+            },
+            ProxyEvent::RequestReceived {
+                method: "GET".into(),
+                uri: "http://example.com/path".into(),
+                headers: HashMap::from([("host".into(), "example.com".into())]),
+            },
+        ];
+        for ev in cases {
+            let json = serde_json::to_string(&ev).unwrap();
+            let back: ProxyEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                serde_json::to_value(&ev).unwrap(),
+                serde_json::to_value(&back).unwrap()
+            );
+        }
+    }
 }
