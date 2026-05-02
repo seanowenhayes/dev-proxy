@@ -7,3 +7,10 @@ node_modules/
 # ignore all target folders
 target/
 **/target/
+
+# IDE config
+.idea/
+.vscode/
+
+.env
+.aider*
