@@ -56,6 +56,19 @@ pub enum ProxyEvent {
         uri: String,
         headers: HashMap<String, String>,
     },
+    MitmRequest {
+        id: String,
+        method: String,
+        url: String,
+        headers: HashMap<String, String>,
+    },
+    MitmResponse {
+        id: String,
+        status: u16,
+        status_text: String,
+        headers: HashMap<String, String>,
+        body_size: u64,
+    },
 }
 
 pub async fn main(event_tx: mpsc::Sender<ProxyEvent>) {
@@ -74,7 +87,15 @@ pub async fn main(event_tx: mpsc::Sender<ProxyEvent>) {
 /// never returns.
 pub async fn serve_listener(addr: SocketAddr, event_tx: mpsc::Sender<ProxyEvent>) -> ! {
     println!("Starting proxy...");
+    tracing::debug!("listening on {}", addr);
+    let listener = TcpListener::bind(addr).await.unwrap();
+    serve_on_listener(listener, event_tx).await
+}
 
+/// Like [`serve_listener`] but binds an already-created listener.
+/// Useful for integration tests so the test can bind on port `0` and learn
+/// the selected port without racing on events.
+pub async fn serve_on_listener(listener: TcpListener, event_tx: mpsc::Sender<ProxyEvent>) -> ! {
     let router_svc = Router::new().route("/", get(|| async { "Hello, World!" }));
 
     let event_tx_clone = event_tx.clone();
@@ -95,9 +116,6 @@ pub async fn serve_listener(addr: SocketAddr, event_tx: mpsc::Sender<ProxyEvent>
         tower_service.clone().call(request)
     });
 
-    tracing::debug!("listening on {}", addr);
-
-    let listener = TcpListener::bind(addr).await.unwrap();
     let bound = listener.local_addr().expect("bound socket has address");
     // notify caller that we've started listening (include actual port)
     let _ = event_tx.send(ProxyEvent::Started(bound)).await;
@@ -124,6 +142,12 @@ pub async fn serve_listener(addr: SocketAddr, event_tx: mpsc::Sender<ProxyEvent>
     }
 }
 
+fn is_mitm_mode() -> bool {
+    std::env::var("MITM_MODE")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 async fn proxy(req: Request, event_tx: mpsc::Sender<ProxyEvent>) -> Result<Response, hyper::Error> {
     tracing::trace!(?req);
     let method = req.method().to_string();
@@ -144,10 +168,17 @@ async fn proxy(req: Request, event_tx: mpsc::Sender<ProxyEvent>) -> Result<Respo
         tokio::task::spawn(async move {
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
-                    if let Err(e) = tunnel(upgraded, host_addr.clone(), tx.clone()).await {
-                        let _ = tx.send(ProxyEvent::ConnectionError(e.to_string())).await;
-                        tracing::warn!("server io error: {}", e);
-                    };
+                    if is_mitm_mode() {
+                        if let Err(e) = mitm_tunnel(upgraded, host_addr.clone(), tx.clone()).await {
+                            let _ = tx.send(ProxyEvent::ConnectionError(e.to_string())).await;
+                            tracing::warn!("mitm error: {}", e);
+                        };
+                    } else {
+                        if let Err(e) = tunnel(upgraded, host_addr.clone(), tx.clone()).await {
+                            let _ = tx.send(ProxyEvent::ConnectionError(e.to_string())).await;
+                            tracing::warn!("server io error: {}", e);
+                        };
+                    }
                 }
                 Err(e) => {
                     let _ = tx.send(ProxyEvent::ConnectionError(e.to_string())).await;
@@ -193,6 +224,29 @@ async fn tunnel(
         .await;
 
     Ok(())
+}
+
+static MITM_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_mitm_id() -> String {
+    MITM_COUNTER
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        .to_string()
+}
+
+async fn mitm_tunnel(
+    upgraded: Upgraded,
+    addr: String,
+    event_tx: mpsc::Sender<ProxyEvent>,
+) -> std::io::Result<()> {
+    let id = next_mitm_id();
+
+    let client_io = TokioIo::new(upgraded);
+
+    match crate::mitm::mitm_handler(client_io, &addr, &id, event_tx.clone()).await {
+        Ok(_) => Ok(()),
+        Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
+    }
 }
 
 #[cfg(test)]

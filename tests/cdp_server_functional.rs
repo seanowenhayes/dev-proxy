@@ -1,6 +1,6 @@
 //! Functional tests for the CDP discovery HTTP API and WebSocket command replies.
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use proxy_server::cdp_server::{self, TARGET_ID};
 use serde_json::{json, Value};
 use tokio::io::AsyncWriteExt;

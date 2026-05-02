@@ -32,8 +32,6 @@ fn emit(method: &str, params: Value) -> String {
 /// Reads `ProxyEvent`s and forwards them as CDP Network JSON to `cdp_tx`.
 /// Runs until the proxy channel closes.
 pub async fn bridge(mut proxy_rx: mpsc::Receiver<ProxyEvent>, cdp_tx: broadcast::Sender<String>) {
-    // addr -> queue of request IDs, so concurrent tunnels to the same host
-    // are matched in FIFO order.
     let mut pending: HashMap<String, VecDeque<String>> = HashMap::new();
 
     while let Some(ev) = proxy_rx.recv().await {
@@ -92,12 +90,89 @@ pub async fn bridge(mut proxy_rx: mpsc::Receiver<ProxyEvent>, cdp_tx: broadcast:
                 )
             }
 
-            // Started / ConnectionAccepted / ConnectionError are not surfaced in
-            // the Network domain — DevTools doesn't have a slot for them.
+            ProxyEvent::MitmRequest { id, method, url, headers } => {
+                let ts = now();
+                let cdp_headers: Value = headers
+                    .into_iter()
+                    .map(|(k, v)| (k, Value::String(v)))
+                    .collect::<serde_json::Map<_, _>>()
+                    .into();
+                emit(
+                    "Network.requestWillBeSent",
+                    json!({
+                        "requestId": id,
+                        "loaderId": id,
+                        "documentURL": url.clone(),
+                        "request": {
+                            "url": url,
+                            "method": method,
+                            "headers": cdp_headers,
+                            "initialPriority": "High",
+                            "referrerPolicy": "strict-origin-when-cross-origin",
+                        },
+                        "timestamp": ts,
+                        "wallTime": ts,
+                        "initiator": { "type": "other" },
+                        "type": "Other",
+                    }),
+                )
+            }
+
+            ProxyEvent::MitmResponse { id, status, status_text, headers, body_size } => {
+                let ts = now();
+                let cdp_headers: Value = headers
+                    .clone()
+                    .into_iter()
+                    .map(|(k, v)| (k, Value::String(v)))
+                    .collect::<serde_json::Map<_, _>>()
+                    .into();
+
+                let response_event = emit(
+                    "Network.responseReceived",
+                    json!({
+                        "requestId": id,
+                        "loaderId": id,
+                        "timestamp": ts,
+                        "frameId": id,
+                        "type": "Other",
+                        "response": {
+                            "url": "",
+                            "status": status,
+                            "statusText": status_text,
+                            "headers": cdp_headers,
+                            "mimeType": headers.get("content-type").cloned().unwrap_or_else(|| "application/octet-stream".into()),
+                            "protocol": "http/1.1",
+                        },
+                    }),
+                );
+                let _ = cdp_tx.send(response_event);
+
+                if body_size > 0 {
+                    let data_event = emit(
+                        "Network.dataReceived",
+                        json!({
+                            "requestId": id,
+                            "timestamp": ts,
+                            "dataLength": body_size,
+                            "encodedDataLength": body_size,
+                        }),
+                    );
+                    let _ = cdp_tx.send(data_event);
+                }
+
+                emit(
+                    "Network.loadingFinished",
+                    json!({
+                        "requestId": id,
+                        "timestamp": ts,
+                        "encodedDataLength": body_size,
+                    }),
+                )
+            }
+
             _ => continue,
         };
 
-        // Ignore errors — no subscribers just means DevTools isn't open yet.
         let _ = cdp_tx.send(msg);
     }
 }
@@ -109,7 +184,6 @@ mod tests {
     use std::collections::HashMap;
     use tokio::sync::{broadcast, mpsc};
 
-    /// Drive the bridge with a fixed list of events and collect whatever it broadcasts.
     async fn run(events: Vec<ProxyEvent>) -> Vec<Value> {
         let (proxy_tx, proxy_rx) = mpsc::channel(32);
         let (cdp_tx, mut cdp_rx) = broadcast::channel(32);
@@ -117,7 +191,7 @@ mod tests {
         for ev in events {
             proxy_tx.send(ev).await.unwrap();
         }
-        drop(proxy_tx); // signal bridge to exit
+        drop(proxy_tx);
         handle.await.unwrap();
         let mut out = vec![];
         while let Ok(msg) = cdp_rx.try_recv() {
@@ -165,8 +239,6 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_tunnels_to_same_host_matched_fifo() {
-        // Two overlapping CONNECTs to the same host — each Tunnel must pair with
-        // the correct preceding CONNECT (first-in-first-out).
         let events = vec![
             ProxyEvent::RequestReceived {
                 method: "CONNECT".into(),
@@ -196,11 +268,9 @@ mod tests {
         let id_second = out[1]["params"]["requestId"].as_str().unwrap();
         assert_ne!(id_first, id_second, "each CONNECT must get its own request ID");
 
-        // First Tunnel closes → paired with first CONNECT
         assert_eq!(out[2]["params"]["requestId"], id_first);
         assert_eq!(out[2]["params"]["encodedDataLength"], 30);
 
-        // Second Tunnel closes → paired with second CONNECT
         assert_eq!(out[3]["params"]["requestId"], id_second);
         assert_eq!(out[3]["params"]["encodedDataLength"], 70);
     }
@@ -241,5 +311,62 @@ mod tests {
         let out = run(events).await;
         assert_eq!(out[0]["params"]["request"]["headers"]["authorization"], "Bearer tok");
         assert_eq!(out[0]["params"]["request"]["headers"]["content-type"], "application/json");
+    }
+
+    #[tokio::test]
+    async fn mitm_request_emits_request_will_be_sent_with_id() {
+        let mut headers = HashMap::new();
+        headers.insert("host".into(), "api.example.com".into());
+        let events = vec![ProxyEvent::MitmRequest {
+            id: "mitm-1".into(),
+            method: "GET".into(),
+            url: "https://api.example.com/v1/users".into(),
+            headers,
+        }];
+        let out = run(events).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["method"], "Network.requestWillBeSent");
+        assert_eq!(out[0]["params"]["requestId"], "mitm-1");
+        assert_eq!(out[0]["params"]["request"]["method"], "GET");
+        assert_eq!(out[0]["params"]["request"]["url"], "https://api.example.com/v1/users");
+    }
+
+    #[tokio::test]
+    async fn mitm_response_emits_three_events() {
+        let events = vec![ProxyEvent::MitmResponse {
+            id: "mitm-1".into(),
+            status: 200,
+            status_text: "OK".into(),
+            headers: HashMap::from([("content-type".into(), "application/json".into())]),
+            body_size: 1024,
+        }];
+        let out = run(events).await;
+        assert_eq!(out.len(), 3);
+
+        assert_eq!(out[0]["method"], "Network.responseReceived");
+        assert_eq!(out[0]["params"]["response"]["status"], 200);
+        assert_eq!(out[0]["params"]["response"]["statusText"], "OK");
+
+        assert_eq!(out[1]["method"], "Network.dataReceived");
+        assert_eq!(out[1]["params"]["dataLength"], 1024);
+
+        assert_eq!(out[2]["method"], "Network.loadingFinished");
+        assert_eq!(out[2]["params"]["encodedDataLength"], 1024);
+    }
+
+    #[tokio::test]
+    async fn mitm_response_no_body_skips_data_received() {
+        let events = vec![ProxyEvent::MitmResponse {
+            id: "mitm-1".into(),
+            status: 204,
+            status_text: "No Content".into(),
+            headers: HashMap::new(),
+            body_size: 0,
+        }];
+        let out = run(events).await;
+        assert_eq!(out.len(), 2);
+
+        assert_eq!(out[0]["method"], "Network.responseReceived");
+        assert_eq!(out[1]["method"], "Network.loadingFinished");
     }
 }

@@ -1,5 +1,6 @@
 pub mod cdp;
 pub mod cdp_server;
+pub mod mitm;
 pub mod proxy;
 
 use once_cell::sync::Lazy;

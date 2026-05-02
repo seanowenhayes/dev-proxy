@@ -29,7 +29,7 @@ async fn get_root_returns_hello() {
 
     let addr = match rx.recv().await {
         Some(ProxyEvent::Started(a)) => a,
-        other => panic!("expected Started, got {other:?}"),
+        _ => panic!("expected Started event"),
     };
 
     let mut stream = TcpStream::connect(addr).await.unwrap();
@@ -80,7 +80,7 @@ async fn connect_tunnels_to_tcp_echo() {
 
     let proxy_addr = match rx.recv().await {
         Some(ProxyEvent::Started(a)) => a,
-        other => panic!("expected Started, got {other:?}"),
+        _ => panic!("expected Started event"),
     };
 
     let mut stream = TcpStream::connect(proxy_addr).await.unwrap();
