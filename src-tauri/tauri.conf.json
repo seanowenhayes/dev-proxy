@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "proxy",
+  "version": "0.1.0",
+  "identifier": "com.proxy.app",
+  "build": {
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../frontend"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Dev Proxy",
+        "width": 1024,
+        "height": 768,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  },
+  "bundle": {
+    "active": true
+  }
+}
