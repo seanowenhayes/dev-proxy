@@ -22,6 +22,19 @@ pub async fn start() -> Result<(), String> {
     let (proxy_tx, proxy_rx) = tokio::sync::mpsc::channel::<proxy::ProxyEvent>(256);
     let (cdp_tx, _) = broadcast::channel::<String>(256);
 
+    if std::env::var("MITM_MODE")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        let ca_path = "dev-proxy-ca.pem";
+        if let Err(e) = mitm::export_ca_cert(ca_path) {
+            eprintln!("Failed to export CA cert: {e}");
+        } else {
+            eprintln!("CA certificate written to {ca_path}");
+            eprintln!("Import this into your browser to trust intercepted connections.");
+        }
+    }
+
     // Convert proxy events -> CDP Network JSON and broadcast to DevTools clients.
     tokio::spawn(cdp::bridge(proxy_rx, cdp_tx.clone()));
 

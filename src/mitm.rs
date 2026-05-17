@@ -1,23 +1,72 @@
 use httparse::{Request, Response, Status};
 use once_cell::sync::Lazy;
 use rcgen::{
-    BasicConstraints, CertificateParams, DistinguishedName, DnType,
+    BasicConstraints, Certificate, CertificateParams, DistinguishedName, DnType,
     IsCa, Issuer, KeyPair, KeyUsagePurpose, SanType,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use std::collections::HashMap;
+use std::io::Cursor;
+use std::pin::Pin;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 
 use crate::proxy::ProxyEvent;
 use tokio::sync::mpsc;
 
+struct BufferedStream<S> {
+    prefix: Cursor<Vec<u8>>,
+    inner: S,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for BufferedStream<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let prefix_remaining = this.prefix.get_ref().len() - this.prefix.position() as usize;
+        if prefix_remaining > 0 {
+            let n = std::io::Read::read(&mut this.prefix, buf.initialize_unfilled()).unwrap_or(0);
+            buf.advance(n);
+            Poll::Ready(Ok(()))
+        } else {
+            Pin::new(&mut this.inner).poll_read(cx, buf)
+        }
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for BufferedStream<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
 struct MitmCa {
     params: CertificateParams,
     key: KeyPair,
+    cert: Certificate,
 }
 
 static MITM_CA: Lazy<MitmCa> = Lazy::new(|| {
@@ -33,10 +82,28 @@ static MITM_CA: Lazy<MitmCa> = Lazy::new(|| {
     ];
 
     let key = KeyPair::generate().expect("CA key");
-    let _ca_cert = params.self_signed(&key).expect("CA self-signed");
+    let cert = params.self_signed(&key).expect("CA self-signed");
 
-    MitmCa { params, key }
+    MitmCa { params, key, cert }
 });
+
+/// Write the CA certificate as PEM to the given path.
+pub fn export_ca_cert(path: &str) -> Result<(), String> {
+    let pem = MITM_CA.cert.pem();
+    std::fs::write(path, pem.as_bytes())
+        .map_err(|e| format!("write CA cert: {e}"))
+}
+
+pub fn ca_cert_info() -> String {
+    let pem = MITM_CA.cert.pem();
+    let subject = pem
+        .lines()
+        .filter(|l| !l.starts_with("-----"))
+        .take(1)
+        .next()
+        .unwrap_or("?");
+    format!("CA cert: dev-proxy-mitm-ca ({subject}...)")
+}
 
 struct LeafCert {
     cert_der: CertificateDer<'static>,
@@ -85,6 +152,15 @@ fn get_or_create_leaf(host: &str) -> Result<(CertificateDer<'static>, PrivateKey
     Ok((cert_der, PrivateKeyDer::Pkcs8(key_der.into())))
 }
 
+pub fn make_server_config_for_host(host: &str) -> Result<ServerConfig, String> {
+    let (cert_der, key_der) = get_or_create_leaf(host)?;
+
+    ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key_der)
+        .map_err(|e| format!("server config: {e}"))
+}
+
 fn make_server_config(host: &str) -> Result<ServerConfig, String> {
     let (cert_der, key_der) = get_or_create_leaf(host)?;
 
@@ -118,11 +194,50 @@ pub async fn mitm_handler(
     let server_config = Arc::new(make_server_config(&host)?);
     let acceptor = TlsAcceptor::from(server_config);
 
-    let mut client_tls = acceptor
+    let client_tls = acceptor
         .accept(client_stream)
         .await
         .map_err(|e| format!("tls accept: {e}"))?;
 
+    mitm_handle_decrypted(client_tls, &host, id, event_tx).await
+}
+
+pub async fn mitm_handler_from_buffered(
+    client_stream: impl AsyncRead + AsyncWrite + Unpin + Send,
+    prefix: Vec<u8>,
+    addr: &str,
+    id: &str,
+    event_tx: mpsc::Sender<ProxyEvent>,
+) -> Result<(), String> {
+    let host = addr
+        .split(':')
+        .next()
+        .unwrap_or(addr)
+        .to_string();
+
+    let server_config = Arc::new(make_server_config(&host)?);
+    let acceptor = TlsAcceptor::from(server_config);
+
+    let buffered = BufferedStream {
+        prefix: Cursor::new(prefix),
+        inner: client_stream,
+    };
+    let client_tls = acceptor
+        .accept(buffered)
+        .await
+        .map_err(|e| format!("tls accept: {e}"))?;
+
+    mitm_handle_decrypted(client_tls, &host, id, event_tx).await
+}
+
+/// Handle an already-decrypted TLS stream (TLS accept done externally).
+pub async fn mitm_handle_decrypted(
+    mut client_tls: impl AsyncRead + AsyncWrite + Unpin,
+    host: &str,
+    id: &str,
+    event_tx: mpsc::Sender<ProxyEvent>,
+) -> Result<(), String> {
+    let host = host.to_string();
     let mut client_buf = [0u8; 16384];
     let mut client_read = 0;
 
@@ -196,140 +311,74 @@ pub async fn mitm_handler(
                     .split(':')
                     .next()
                     .unwrap_or(&host);
-                let server_name = ServerName::try_from(domain.to_string())
+                let sn = ServerName::try_from(domain.to_string())
                     .map_err(|e| format!("server name: {e}"))?
                     .to_owned();
 
                 let connector = tokio_rustls::TlsConnector::from(client_config);
-                let server_tcp = TcpStream::connect(addr)
+                let server_addr = if host_header.contains(':') {
+                    host_header.clone()
+                } else {
+                    format!("{host_header}:443")
+                };
+                let server_tcp = TcpStream::connect(&server_addr)
                     .await
                     .map_err(|e| format!("connect to server: {e}"))?;
-                let mut server_tls = connector
-                    .connect(server_name, server_tcp)
+                let mut s_tls = connector
+                    .connect(sn, server_tcp)
                     .await
                     .map_err(|e| format!("tls connect to server: {e}"))?;
 
-                server_tls
+                s_tls
                     .write_all(&header_bytes)
                     .await
                     .map_err(|e| format!("write request to server: {e}"))?;
                 if body_len > 0 {
-                    server_tls
+                    s_tls
                         .write_all(&body)
                         .await
                         .map_err(|e| format!("write body to server: {e}"))?;
                 }
 
-                let (status, response_headers, response_line) =
-                    read_http_response(&mut server_tls).await?;
+                let resp_bytes = read_full_response(&mut s_tls).await?;
 
-                let status_text = match status {
-                    200 => "OK",
-                    201 => "Created",
-                    204 => "No Content",
-                    301 => "Moved Permanently",
-                    302 => "Found",
-                    304 => "Not Modified",
-                    400 => "Bad Request",
-                    401 => "Unauthorized",
-                    403 => "Forbidden",
-                    404 => "Not Found",
-                    500 => "Internal Server Error",
-                    _ => "",
-                }
-                .to_string();
+                tracing::info!("Got response from server: {} bytes for {}", resp_bytes.len(), url);
 
-                let mut response_buf = response_line.into_bytes();
-                for (name, value) in &response_headers {
-                    response_buf.extend_from_slice(name.as_bytes());
-                    response_buf.extend_from_slice(b": ");
-                    response_buf.extend_from_slice(value.as_bytes());
-                    response_buf.extend_from_slice(b"\r\n");
-                }
-                response_buf.extend_from_slice(b"\r\n");
-
-                client_tls
-                    .write_all(&response_buf)
-                    .await
-                    .map_err(|e| format!("write response to client: {e}"))?;
-
-                let is_chunked = response_headers
-                    .get("transfer-encoding")
-                    .map(|v| v.to_lowercase().contains("chunked"))
-                    .unwrap_or(false);
-
-                let content_length: Option<u64> = response_headers
-                    .get("content-length")
-                    .and_then(|v| v.parse().ok());
-
-                let mut total_body = 0u64;
-
-                if is_chunked {
-                    loop {
-                        let chunk_size = read_chunk_size(&mut server_tls).await?;
-                        if chunk_size == 0 {
-                            break;
+                let mut hb = [httparse::EMPTY_HEADER; 64];
+                let mut r = Response::new(&mut hb);
+                match r.parse(&resp_bytes) {
+                    Ok(Status::Complete(parsed_len)) => {
+                        let status = r.code.unwrap_or(200);
+                        let mut response_headers: HashMap<String, String> = HashMap::new();
+                        for h in r.headers {
+                            response_headers.insert(h.name.to_string(), String::from_utf8_lossy(h.value).to_string());
                         }
-                        let mut chunk = vec![0u8; chunk_size as usize];
-                        server_tls
-                            .read_exact(&mut chunk)
-                            .await
-                            .map_err(|e| format!("read chunk: {e}"))?;
-                        client_tls
-                            .write_all(&chunk)
-                            .await
-                            .map_err(|e| format!("write chunk to client: {e}"))?;
-                        total_body += chunk_size as u64;
+                        let status_text = match status {
+                            200 => "OK", 201 => "Created", 204 => "No Content",
+                            301 => "Moved Permanently", 302 => "Found", 304 => "Not Modified",
+                            400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden",
+                            404 => "Not Found", 500 => "Internal Server Error", _ => "",
+                        }.to_string();
 
-                        let mut crlf = [0u8; 2];
-                        server_tls
-                            .read_exact(&mut crlf)
-                            .await
-                            .map_err(|e| format!("read chunk crlf: {e}"))?;
+                        client_tls.write_all(&resp_bytes).await.map_err(|e| format!("write resp: {e}"))?;
+                        client_tls.flush().await.map_err(|e| format!("flush resp: {e}"))?;
+                        tracing::info!("Wrote {} bytes to client for {}", resp_bytes.len(), url);
+
+                        let body_size = resp_bytes.len() as u64 - parsed_len as u64;
+                        let _ = event_tx.send(ProxyEvent::MitmResponse {
+                            id: id.to_string(), status, status_text,
+                            headers: response_headers, body_size,
+                        }).await;
+
+                        client_read = 0;
+                        continue;
                     }
-                    let mut crlf = [0u8; 2];
-                    let _ = server_tls.read_exact(&mut crlf).await;
-                } else if let Some(len) = content_length {
-                    if len > 0 {
-                        let mut body_buf = vec![0u8; len as usize];
-                        server_tls
-                            .read_exact(&mut body_buf)
-                            .await
-                            .map_err(|e| format!("read body: {e}"))?;
-                        client_tls
-                            .write_all(&body_buf)
-                            .await
-                            .map_err(|e| format!("write body to client: {e}"))?;
-                        total_body = len;
-                    }
-                } else {
-                    let mut buf = [0u8; 4096];
-                    loop {
-                        let n = server_tls.read(&mut buf).await.unwrap_or(0);
-                        if n == 0 {
-                            break;
-                        }
-                        client_tls
-                            .write_all(&buf[..n])
-                            .await
-                            .map_err(|e| format!("write to client: {e}"))?;
-                        total_body += n as u64;
+                    _ => {
+                        client_tls.write_all(&resp_bytes).await.map_err(|e| format!("write resp: {e}"))?;
+                        client_tls.flush().await.ok();
+                        return Ok(());
                     }
                 }
-
-                let _ = event_tx
-                    .send(ProxyEvent::MitmResponse {
-                        id: id.to_string(),
-                        status,
-                        status_text,
-                        headers: response_headers,
-                        body_size: total_body,
-                    })
-                    .await;
-
-                client_tls.shutdown().await.ok();
-
-                return Ok(());
             }
             Ok(Status::Partial) => {
                 if client_read == client_buf.len() {
@@ -344,12 +393,14 @@ pub async fn mitm_handler(
     }
 }
 
-async fn read_http_response<S: AsyncRead + AsyncWrite + Unpin>(
+/// Read the full HTTP response (headers + body) into a single buffer.
+async fn read_full_response<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
-) -> Result<(u16, HashMap<String, String>, String), String> {
+) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
-    let mut temp_buf = [0u8; 4096];
+    let mut temp_buf = [0u8; 8192];
 
+    // Read until we have complete headers
     loop {
         let n = stream
             .read(&mut temp_buf)
@@ -362,49 +413,61 @@ async fn read_http_response<S: AsyncRead + AsyncWrite + Unpin>(
 
         let mut headers_buf = [httparse::EMPTY_HEADER; 64];
         let mut response = Response::new(&mut headers_buf);
-        match response.parse(&buf) {
-            Ok(Status::Complete(_)) => {
-                let status = response.code.unwrap_or(200);
-                let reason = response.reason.unwrap_or("");
-                let version = response.version.unwrap_or(1);
+        if let Ok(Status::Complete(parsed_len)) = response.parse(&buf) {
+            // Now read the body
+            let is_chunked = response
+                .headers
+                .iter()
+                .any(|h| h.name.eq_ignore_ascii_case("transfer-encoding")
+                    && String::from_utf8_lossy(h.value).to_lowercase().contains("chunked"));
 
-                let mut headers: HashMap<String, String> = HashMap::new();
-                for h in response.headers {
-                    headers.insert(
-                        h.name.to_string(),
-                        String::from_utf8_lossy(h.value).to_string(),
-                    );
+            let content_length: Option<u64> = response
+                .headers
+                .iter()
+                .find(|h| h.name.eq_ignore_ascii_case("content-length"))
+                .and_then(|h| String::from_utf8_lossy(h.value).parse().ok());
+
+            if is_chunked {
+                // Read chunked body
+                loop {
+                    let mut line = Vec::new();
+                    loop {
+                        let mut byte = [0u8; 1];
+                        stream.read_exact(&mut byte).await.map_err(|e| format!("read chunk: {e}"))?;
+                        if byte[0] == b'\n' { break; }
+                        if byte[0] != b'\r' { line.push(byte[0]); }
+                    }
+                    let line_str = String::from_utf8_lossy(&line);
+                    let chunk_size_str = line_str.split(';').next().unwrap_or("0").trim();
+                    let chunk_size = u64::from_str_radix(chunk_size_str, 16).map_err(|e| format!("parse chunk size: {e}"))?;
+                    if chunk_size == 0 { break; }
+                    let mut chunk = vec![0u8; chunk_size as usize];
+                    stream.read_exact(&mut chunk).await.map_err(|e| format!("read chunk data: {e}"))?;
+                    buf.extend_from_slice(&chunk);
+                    // Read trailing CRLF
+                    let mut crlf = [0u8; 2];
+                    stream.read_exact(&mut crlf).await.ok();
                 }
-
-                let response_line = format!("HTTP/1.{version} {status} {reason}\r\n");
-                return Ok((status, headers, response_line));
+                // Read final CRLF
+                let mut crlf = [0u8; 2];
+                stream.read_exact(&mut crlf).await.ok();
+            } else if let Some(len) = content_length {
+                let remaining = len as usize - (buf.len() - parsed_len);
+                if remaining > 0 {
+                    let mut body = vec![0u8; remaining];
+                    stream.read_exact(&mut body).await.map_err(|e| format!("read body: {e}"))?;
+                    buf.extend_from_slice(&body);
+                }
+            } else {
+                // No content-length, read until close
+                loop {
+                    let n = stream.read(&mut temp_buf).await.unwrap_or(0);
+                    if n == 0 { break; }
+                    buf.extend_from_slice(&temp_buf[..n]);
+                }
             }
-            Ok(Status::Partial) => continue,
-            Err(e) => return Err(format!("parse response: {e}")),
-        }
-    }
-}
 
-async fn read_chunk_size<S: AsyncRead + Unpin>(stream: &mut S) -> Result<u64, String> {
-    let mut line = Vec::new();
-    let mut byte = [0u8; 1];
-    loop {
-        stream
-            .read_exact(&mut byte)
-            .await
-            .map_err(|e| format!("read chunk size: {e}"))?;
-        if byte[0] == b'\n' {
-            break;
-        }
-        if byte[0] != b'\r' {
-            line.push(byte[0]);
+            return Ok(buf);
         }
     }
-    let line_str = String::from_utf8_lossy(&line);
-    let size_str = line_str
-        .split(';')
-        .next()
-        .unwrap_or("0")
-        .trim();
-    u64::from_str_radix(size_str, 16).map_err(|e| format!("parse chunk size: {e}"))
 }

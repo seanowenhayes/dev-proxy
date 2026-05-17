@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, net::SocketAddr};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+use tokio::io::AsyncReadExt;
 use tower::Service;
 use tower::ServiceExt;
 
@@ -96,8 +97,81 @@ pub async fn serve_listener(addr: SocketAddr, event_tx: mpsc::Sender<ProxyEvent>
 /// Useful for integration tests so the test can bind on port `0` and learn
 /// the selected port without racing on events.
 pub async fn serve_on_listener(listener: TcpListener, event_tx: mpsc::Sender<ProxyEvent>) -> ! {
-    let router_svc = Router::new().route("/", get(|| async { "Hello, World!" }));
+    let bound = listener.local_addr().expect("bound socket has address");
+    // notify caller that we've started listening (include actual port)
+    let _ = event_tx.send(ProxyEvent::Started(bound)).await;
+    loop {
+        let (stream, peer) = listener.accept().await.unwrap();
+        tracing::info!("TCP connection from {}", peer);
+        let tx = event_tx.clone();
+        // report accepted connection
+        let _ = tx.send(ProxyEvent::ConnectionAccepted(peer)).await;
+        tokio::task::spawn(async move {
+            if let Err(err) = handle_connection(stream, &peer, tx).await {
+                tracing::error!("Connection error from {}: {:?}", peer, err);
+            }
+        });
+    }
+}
 
+async fn handle_connection(
+    mut stream: TcpStream,
+    peer: &SocketAddr,
+    event_tx: mpsc::Sender<ProxyEvent>,
+) -> Result<(), String> {
+    // Read first bytes to detect TLS vs HTTP
+    let mut probe = [0u8; 3];
+    let n = stream
+        .peek(&mut probe)
+        .await
+        .map_err(|e| format!("peek: {e}"))?;
+
+    // TLS ClientHello starts with 0x16 0x03
+    if n >= 3 && probe[0] == 0x16 && probe[1] == 0x03 {
+        // Read the full TLS record
+        let mut header = [0u8; 5];
+        stream
+            .read_exact(&mut header)
+            .await
+            .map_err(|e| format!("read tls header: {e}"))?;
+        let record_len = ((header[3] as usize) << 8) | (header[4] as usize);
+        let mut record = vec![0u8; 5 + record_len];
+        record[..5].copy_from_slice(&header);
+        stream
+            .read_exact(&mut record[5..])
+            .await
+            .map_err(|e| format!("read tls record: {e}"))?;
+
+        // Use rustls Acceptor to parse ClientHello
+        let mut acceptor = rustls::server::Acceptor::default();
+        acceptor
+            .read_tls(&mut std::io::Cursor::new(&record))
+            .map_err(|e| format!("read tls: {e}"))?;
+        let accepted = acceptor
+            .accept()
+            .map_err(|e| format!("accept: {e:?}"))?
+            .ok_or("no client hello")?;
+        let client_hello = accepted.client_hello();
+        let host: String = match client_hello.server_name() {
+            Some(name) => name.to_string(),
+            None => {
+                tracing::debug!("TLS connection from {} without SNI - dropping", peer);
+                return Ok(());
+            }
+        };
+
+        tracing::info!("TLS connection from {} -> SNI: {}", peer, host);
+
+        if is_mitm_mode() {
+            mitm_tunnel_from_tls(stream, host, record, &event_tx).await?;
+        } else {
+            return Err("Raw TLS connections require MITM_MODE=true".into());
+        }
+        return Ok(());
+    }
+
+    // Normal HTTP - let hyper parse it
+    let router_svc = Router::new().route("/", get(|| async { "Hello, World!" }));
     let event_tx_clone = event_tx.clone();
     let tower_service = tower::service_fn(move |req: Request<_>| {
         let router_svc = router_svc.clone();
@@ -116,30 +190,25 @@ pub async fn serve_on_listener(listener: TcpListener, event_tx: mpsc::Sender<Pro
         tower_service.clone().call(request)
     });
 
-    let bound = listener.local_addr().expect("bound socket has address");
-    // notify caller that we've started listening (include actual port)
-    let _ = event_tx.send(ProxyEvent::Started(bound)).await;
-    loop {
-        let (stream, peer) = listener.accept().await.unwrap();
-        let io = TokioIo::new(stream);
-        let hyper_service = hyper_service.clone();
-        let tx = event_tx.clone();
-        // report accepted connection
-        let _ = tx.send(ProxyEvent::ConnectionAccepted(peer)).await;
-        tokio::task::spawn(async move {
-            if let Err(err) = http1::Builder::new()
-                .preserve_header_case(true)
-                .title_case_headers(true)
-                .serve_connection(io, hyper_service)
-                .with_upgrades()
-                .await
-            {
-                let _ = tx
-                    .send(ProxyEvent::ConnectionError(format!("{err:?}")))
-                    .await;
-            }
-        });
-    }
+    let io = TokioIo::new(stream);
+    http1::Builder::new()
+        .preserve_header_case(true)
+        .title_case_headers(true)
+        .serve_connection(io, hyper_service)
+        .with_upgrades()
+        .await
+        .map_err(|e| format!("http: {e}"))?;
+    Ok(())
+}
+
+async fn mitm_tunnel_from_tls(
+    stream: TcpStream,
+    host: String,
+    client_hello: Vec<u8>,
+    event_tx: &mpsc::Sender<ProxyEvent>,
+) -> Result<(), String> {
+    let id = next_mitm_id();
+    crate::mitm::mitm_handler_from_buffered(stream, client_hello, &host, &id, event_tx.clone()).await
 }
 
 fn is_mitm_mode() -> bool {
