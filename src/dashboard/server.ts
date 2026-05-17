@@ -52,19 +52,19 @@ export class DashboardServer {
           <div class="card">
             <h2>2. Configure Proxy</h2>
             <p>Set your browser or system proxy to:</p>
-            <pre>Host: <code>localhost</code>\nPort: <code>8080</code></pre>
+            <pre>Host: <code>127.0.0.1</code>\nPort: <code>8080</code></pre>
           </div>
 
           <div class="card">
             <h2>3. Inspect Traffic</h2>
             <p>This proxy exposes a Chrome DevTools compatible endpoint.</p>
             <p>1. Open <code>chrome://inspect</code> in a Chrome-based browser.</p>
-            <p>2. Ensure <code>localhost:${this.cdpPort}</code> is in the "Configure..." list.</p>
+            <p>2. Ensure <code>127.0.0.1:${this.cdpPort}</code> is in the "Configure..." list.</p>
             <p>3. Look for <strong>"MITM Proxy"</strong> under Remote Target and click <strong>inspect</strong>.</p>
             
             <hr>
             <p>Direct Link (might require DevTools extensions or specific browser settings):</p>
-            <a href="devtools://devtools/bundled/js_app.html?remoteHub=true&ws=localhost:${this.cdpPort}/devtools/page/${this.proxyId}">
+            <a href="devtools://devtools/bundled/js_app.html?remoteHub=true&ws=127.0.0.1:${this.cdpPort}/devtools/page/${this.proxyId}">
               Open DevTools UI
             </a>
           </div>
@@ -85,8 +85,8 @@ export class DashboardServer {
 
   public async start(): Promise<void> {
     return new Promise((resolve) => {
-      this.app.listen(this.port, () => {
-        console.log(`Dashboard Server listening on port ${this.port}`);
+      this.app.listen(this.port, '127.0.0.1', () => {
+        console.log(`Dashboard Server listening on 127.0.0.1:${this.port}`);
         resolve();
       });
     });

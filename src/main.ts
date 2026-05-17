@@ -11,9 +11,12 @@ async function main() {
   const CDP_PORT = 9222;
   const DASHBOARD_PORT = 3000;
 
-  // Create a temporary directory for the CA to force "download each time"
-  const sslCaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mitm-proxy-'));
-  console.log(`Generated ephemeral CA directory: ${sslCaDir}`);
+  // Use a stable directory for the CA so you only have to trust it once
+  const sslCaDir = path.join(process.cwd(), '.http-mitm-proxy');
+  if (!fs.existsSync(sslCaDir)) {
+    fs.mkdirSync(sslCaDir, { recursive: true });
+  }
+  console.log(`Using CA directory: ${sslCaDir}`);
 
   const mitmServer = new MitmServer(sslCaDir);
   const cdpServer = new CdpServer(CDP_PORT, (id) => mitmServer.getSession(id));
@@ -29,13 +32,13 @@ async function main() {
   ]);
 
   console.log('\nAll components started successfully!');
-  console.log(`- MITM Proxy: localhost:${MITM_PORT}`);
-  console.log(`- CDP Server: localhost:${CDP_PORT}`);
-  console.log(`- Dashboard:  http://localhost:${DASHBOARD_PORT}`);
+  console.log(`- MITM Proxy: 127.0.0.1:${MITM_PORT}`);
+  console.log(`- CDP Server: 127.0.0.1:${CDP_PORT}`);
+  console.log(`- Dashboard:  http://127.0.0.1:${DASHBOARD_PORT}`);
   console.log('\nInstructions:');
   console.log('1. Visit the dashboard to download and trust the CA certificate.');
   console.log('2. Configure your browser to use the proxy.');
-  console.log('3. Open chrome://inspect and click "Configure..." to add localhost:9222.');
+  console.log('3. Open chrome://inspect and click "Configure..." to add 127.0.0.1:9222.');
   console.log('4. Click "inspect" on the MITM Proxy target.');
 }
 

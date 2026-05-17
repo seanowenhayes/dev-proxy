@@ -137,3 +137,6 @@ dist
 
 # Deno
 .deno
+
+# MITM Proxy
+.http-mitm-proxy/

@@ -57,10 +57,11 @@ export class MitmServer extends EventEmitter {
         ctx.onResponseEnd((ctx: any, callback: any) => {
           const session = this.sessions.get(requestId);
           if (session) {
+            const response = ctx.serverToProxyResponse;
             session.response = {
               id: requestId,
-              status: ctx.proxyToClientResponse.statusCode,
-              headers: ctx.proxyToClientResponse.headers,
+              status: response ? response.statusCode : ctx.proxyToClientResponse.statusCode,
+              headers: response ? response.headers : {},
               endTime: Date.now(),
               body: Buffer.concat(responseChunks),
             };
@@ -76,11 +77,11 @@ export class MitmServer extends EventEmitter {
     });
 
     return new Promise((resolve) => {
-      this.proxy.listen({ port, sslCaDir: this.sslCaDir }, (err: any) => {
+      this.proxy.listen({ port, host: '127.0.0.1', sslCaDir: this.sslCaDir }, (err: any) => {
         if (err) {
           console.error('Failed to start proxy:', err);
         } else {
-          console.log(`MITM Proxy listening on port ${port}`);
+          console.log(`MITM Proxy listening on 127.0.0.1:${port}`);
           console.log(`SSL CA directory: ${this.sslCaDir}`);
         }
         resolve();

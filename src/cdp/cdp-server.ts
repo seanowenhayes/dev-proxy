@@ -118,8 +118,8 @@ export class CdpServer {
 
   public async start(): Promise<void> {
     return new Promise((resolve) => {
-      this.server = this.app.listen(this.port, () => {
-        console.log(`CDP Server listening on port ${this.port}`);
+      this.server = this.app.listen(this.port, '127.0.0.1', () => {
+        console.log(`CDP Server listening on 127.0.0.1:${this.port}`);
         resolve();
       });
 
